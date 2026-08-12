@@ -10,7 +10,7 @@ app.listen(port, '0.0.0.0', () => console.log(`Servidor escuchando en puerto ${p
 // Discord Client
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// --- FUNCIONES DE FILTRADO Y LÓGICA DE REPLIT ---
+// --- LÓGICA DE FILTRADO DE REPLIT ---
 
 function parseIsoDuration(value) {
   if (!value) return undefined;
@@ -30,6 +30,11 @@ function normalizeSearchText(value) {
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+}
+
+function dateBoundary(value, endOfDay) {
+  if (!value) return undefined;
+  return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
 }
 
 function matchesFilters(result, options) {
@@ -59,6 +64,23 @@ function matchesFilters(result, options) {
     return false;
   }
 
+  if (options.after || options.before) {
+    if (!result.publishedAt) return false;
+    const published = Date.parse(result.publishedAt);
+    if (
+      options.after &&
+      published < Date.parse(dateBoundary(options.after, false))
+    ) {
+      return false;
+    }
+    if (
+      options.before &&
+      published > Date.parse(dateBoundary(options.before, true))
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -70,9 +92,15 @@ async function searchYouTube(options) {
     const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
     searchUrl.searchParams.set("part", "snippet");
     searchUrl.searchParams.set("type", "video");
-    searchUrl.searchParams.set("maxResults", "50"); // Pedimos 50 para filtrar con margen
+    searchUrl.searchParams.set("maxResults", "50");
     searchUrl.searchParams.set("q", options.name);
     searchUrl.searchParams.set("key", apiKey);
+
+    // Si hay fecha "after" o "before", se la enviamos a la API para afinar el tiro
+    const afterBoundary = dateBoundary(options.after, false);
+    const beforeBoundary = dateBoundary(options.before, true);
+    if (afterBoundary) searchUrl.searchParams.set("publishedAfter", afterBoundary);
+    if (beforeBoundary) searchUrl.searchParams.set("publishedBefore", beforeBoundary);
 
     const response = await fetch(searchUrl.toString());
     const searchData = await response.json();
@@ -83,7 +111,7 @@ async function searchYouTube(options) {
 
     if (ids.length === 0) return { provider: "YouTube", results: [] };
 
-    // Pedimos detalles de duración a la API
+    // Pedimos los detalles completos de los vídeos
     const videosUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
     videosUrl.searchParams.set("part", "snippet,contentDetails");
     videosUrl.searchParams.set("id", ids.join(","));
@@ -92,7 +120,6 @@ async function searchYouTube(options) {
     const videoResponse = await fetch(videosUrl.toString());
     const videoData = await videoResponse.json();
 
-    // Aplicamos el filtro estricto de Replit
     const results = (videoData.items ?? [])
       .map((item) => {
         if (!item.id || !item.snippet?.title || !item.snippet.channelTitle) return undefined;
@@ -100,44 +127,57 @@ async function searchYouTube(options) {
           platform: "YouTube",
           title: item.snippet.title,
           creator: item.snippet.channelTitle,
+          publishedAt: item.snippet.publishedAt,
           durationSeconds: parseIsoDuration(item.contentDetails?.duration),
           url: `https://www.youtube.com/watch?v=${item.id}`,
         };
       })
       .filter(Boolean)
       .filter((result) => matchesFilters(result, options))
-      .slice(0, 5); // Mostramos los 5 mejores filtrados
+      .slice(0, 10);
 
     return { provider: "YouTube", results };
   } catch (error) {
-    console.error("YouTube search error:", error);
+    console.error("Error en YouTube:", error);
     return { provider: "YouTube", results: [] };
   }
 }
 
-// --- CONFIGURACIÓN DEL COMANDO DE DISCORD ---
+// --- COMANDO EN DISCORD CON TODOS LOS PARÁMETROS DE REPLIT ---
 
 const command = new SlashCommandBuilder()
   .setName('video-search')
-  .setDescription('Busca vídeos en YouTube con filtros precisos')
+  .setDescription('Busca vídeos en YouTube y TikTok con filtros avanzados')
   .addStringOption(option => 
-    option.setName('busqueda')
+    option.setName('name')
       .setDescription('Nombre o término a buscar')
       .setRequired(true))
   .addStringOption(option =>
-    option.setName('excluir')
-      .setDescription('Palabras a excluir (separadas por espacio)'))
-  .addStringOption(option =>
-    option.setName('creador')
-      .setDescription('Nombre del canal/creador'))
-  .addStringOption(option =>
-    option.setName('duracion')
-      .setDescription('Filtrar por duración')
+    option.setName('platform')
+      .setDescription('Plataforma donde buscar')
       .addChoices(
-        { name: 'Corto (< 4 minutos)', value: 'short' },
-        { name: 'Medio (4 - 20 minutos)', value: 'medium' },
-        { name: 'Largo (> 20 minutos)', value: 'long' }
-      ));
+        { name: 'Todas (YouTube y TikTok)', value: 'both' },
+        { name: 'Solo YouTube', value: 'youtube' },
+        { name: 'Solo TikTok', value: 'tiktok' }
+      ))
+  .addIntegerOption(option =>
+    option.setName('min_length')
+      .setDescription('Duración mínima en minutos'))
+  .addIntegerOption(option =>
+    option.setName('max_length')
+      .setDescription('Duración máxima en minutos'))
+  .addStringOption(option =>
+    option.setName('exclude')
+      .setDescription('Palabras a excluir (separadas por coma o espacio)'))
+  .addStringOption(option =>
+    option.setName('after')
+      .setDescription('Publicado después de esta fecha (AAAA-MM-DD, ej: 2026-08-08)'))
+  .addStringOption(option =>
+    option.setName('before')
+      .setDescription('Publicado antes de esta fecha (AAAA-MM-DD)'))
+  .addStringOption(option =>
+    option.setName('creator')
+      .setDescription('Nombre del canal/creador'));
 
 client.once('ready', async () => {
   console.log(`¡Bot conectado como ${client.user.tag}!`);
@@ -157,53 +197,60 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'video-search') {
-    const rawQuery = interaction.options.getString('busqueda');
-    const excluir = interaction.options.getString('excluir');
-    const creador = interaction.options.getString('creador');
-    const duracionOption = interaction.options.getString('duracion');
+    const name = interaction.options.getString('name');
+    const platform = interaction.options.getString('platform') || 'both';
+    const minLength = interaction.options.getInteger('min_length');
+    const maxLength = interaction.options.getInteger('max_length');
+    const exclude = interaction.options.getString('exclude');
+    const after = interaction.options.getString('after');
+    const before = interaction.options.getString('before');
+    const creator = interaction.options.getString('creator');
 
     await interaction.deferReply();
 
-    // Rango de segundos según la opción elegida
-    let minSeconds;
-    let maxSeconds;
-    if (duracionOption === 'short') { maxSeconds = 240; }
-    else if (duracionOption === 'medium') { minSeconds = 240; maxSeconds = 1200; }
-    else if (duracionOption === 'long') { minSeconds = 1200; }
+    // Convertir minutos a segundos
+    const minSeconds = minLength ? minLength * 60 : undefined;
+    const maxSeconds = maxLength ? maxLength * 60 : undefined;
+
+    // Formatear palabras excluidas
+    const excludedTerms = exclude ? exclude.split(/[\s,]+/).filter(Boolean) : undefined;
 
     const options = {
-      name: rawQuery,
-      creator: creador || undefined,
+      name,
+      creator: creator || undefined,
       minSeconds,
       maxSeconds,
-      excludedTerms: excluir ? excluir.split(' ') : undefined
+      after: after || undefined,
+      before: before || undefined,
+      excludedTerms
     };
 
     const embed = new EmbedBuilder()
-      .setTitle(`Resultados para: "${rawQuery}"`)
-      .setColor('#FF0000');
+      .setTitle(`Búsqueda: "${name}"`)
+      .setColor('#0099FF');
 
-    if (excluir) embed.addFields({ name: '🚫 Palabras excluidas', value: excluir });
-    if (creador) embed.addFields({ name: '👤 Creador', value: creador });
-
-    const ytData = await searchYouTube(options);
-
-    if (ytData.results.length > 0) {
-      let ytText = '';
-      ytData.results.forEach(item => {
-        ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
-      });
-      embed.addFields({ name: '🔴 YouTube', value: ytText });
-    } else {
-      embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados que cumplan todos los filtros.' });
+    // 1. YouTube
+    if (platform === 'both' || platform === 'youtube') {
+      const ytData = await searchYouTube(options);
+      if (ytData.results.length > 0) {
+        let ytText = '';
+        ytData.results.forEach(item => {
+          ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
+        });
+        embed.addFields({ name: '🔴 YouTube', value: ytText });
+      } else {
+        embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con los filtros introducidos.' });
+      }
     }
 
-    // Enlace a TikTok
-    const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(rawQuery)}`;
-    embed.addFields({ 
-      name: '🎵 TikTok', 
-      value: `• [Buscar "${rawQuery}" directamente en TikTok](${tiktokSearchUrl})\n*(TikTok no permite búsquedas automatizadas sin API oficial)*` 
-    });
+    // 2. TikTok
+    if (platform === 'both' || platform === 'tiktok') {
+      const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
+      embed.addFields({ 
+        name: '🎵 TikTok', 
+        value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Verás la lista completa al abrir el enlace)*` 
+      });
+    }
 
     await interaction.editReply({ embeds: [embed] });
   }
