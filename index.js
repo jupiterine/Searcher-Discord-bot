@@ -1,7 +1,8 @@
 import express from 'express';
 const app = express();
+const port = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Bot activo'));
-app.listen(process.env.PORT || 3000);
+app.listen(port, '0.0.0.0', () => console.log(`Servidor web escuchando en el puerto ${port}`));
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { google } from 'googleapis';
 
