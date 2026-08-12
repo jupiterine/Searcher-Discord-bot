@@ -1,5 +1,7 @@
-import http from 'http';
-http.createServer((req, res) => res.end('Bot activo')).listen(process.env.PORT || 3000);
+import express from 'express';
+const app = express();
+app.get('/', (req, res) => res.send('Bot activo'));
+app.listen(process.env.PORT || 3000);
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { google } from 'googleapis';
 
