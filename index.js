@@ -16,14 +16,39 @@ const youtube = google.youtube({
   auth: process.env.YOUTUBE_API_KEY
 });
 
-// Comando /video-search
+// Definición completa del comando /video-search
 const command = new SlashCommandBuilder()
   .setName('video-search')
-  .setDescription('Busca vídeos en YouTube y TikTok por nombre')
+  .setDescription('Busca vídeos con filtros avanzados en YouTube y TikTok')
   .addStringOption(option => 
     option.setName('busqueda')
       .setDescription('Nombre o término a buscar')
-      .setRequired(true));
+      .setRequired(true))
+  .addStringOption(option =>
+    option.setName('plataforma')
+      .setDescription('¿Dónde quieres buscar?')
+      .addChoices(
+        { name: 'Todas (YouTube y TikTok)', value: 'todas' },
+        { name: 'Solo YouTube', value: 'youtube' },
+        { name: 'Solo TikTok', value: 'tiktok' }
+      ))
+  .addStringOption(option =>
+    option.setName('duracion')
+      .setDescription('Filtrar por duración (solo afecta a YouTube)')
+      .addChoices(
+        { name: 'Cualquier duración', value: 'any' },
+        { name: 'Corto (< 4 minutos)', value: 'short' },
+        { name: 'Medio (4 - 20 minutos)', value: 'medium' },
+        { name: 'Largo (> 20 minutos)', value: 'long' }
+      ))
+  .addStringOption(option =>
+    option.setName('orden')
+      .setDescription('Ordenar resultados')
+      .addChoices(
+        { name: 'Relevancia', value: 'relevance' },
+        { name: 'Más recientes (Fecha)', value: 'date' },
+        { name: 'Más vistos', value: 'viewCount' }
+      ));
 
 // Evento al iniciar
 client.once('ready', async () => {
@@ -34,7 +59,7 @@ client.once('ready', async () => {
       Routes.applicationCommands(client.user.id),
       { body: [command.toJSON()] }
     );
-    console.log('¡Comandos actualizados en Discord!');
+    console.log('¡Comando /video-search actualizado con filtros!');
   } catch (error) {
     console.error('Error al registrar comando:', error);
   }
@@ -46,52 +71,70 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'video-search') {
     const query = interaction.options.getString('busqueda');
+    const plataforma = interaction.options.getString('plataforma') || 'todas';
+    const duracion = interaction.options.getString('duracion') || 'any';
+    const orden = interaction.options.getString('orden') || 'relevance';
+
     await interaction.deferReply();
 
     const embed = new EmbedBuilder()
       .setTitle(`Búsqueda: "${query}"`)
       .setColor('#0099FF');
 
-    // YouTube
-    try {
-      const ytResponse = await youtube.search.list({
-        part: ['snippet'],
-        q: query,
-        maxResults: 2,
-        type: ['video']
-      });
+    // 1. YouTube
+    if (plataforma === 'todas' || plataforma === 'youtube') {
+      try {
+        const searchParams = {
+          part: ['snippet'],
+          q: query,
+          maxResults: 3,
+          type: ['video'],
+          order: orden
+        };
 
-      const ytItems = ytResponse.data.items || [];
-      if (ytItems.length > 0) {
-        let ytText = '';
-        ytItems.forEach(item => {
-          ytText += `• [${item.snippet.title}](https://www.youtube.com/watch?v=${item.id.videoId})\n`;
-        });
-        embed.addFields({ name: '🔴 YouTube', value: ytText });
-      } else {
-        embed.addFields({ name: '🔴 YouTube', value: 'Sin resultados.' });
+        if (duracion !== 'any') {
+          searchParams.videoDuration = duracion;
+        }
+
+        const ytResponse = await youtube.search.list(searchParams);
+        const ytItems = ytResponse.data.items || [];
+
+        if (ytItems.length > 0) {
+          let ytText = '';
+          ytItems.forEach(item => {
+            ytText += `• [${item.snippet.title}](https://www.youtube.com/watch?v=${item.id.videoId})\n`;
+          });
+          embed.addFields({ name: '🔴 YouTube', value: ytText });
+        } else {
+          embed.addFields({ name: '🔴 YouTube', value: 'Sin resultados con esos filtros.' });
+        }
+      } catch (err) {
+        console.error('Error YouTube:', err);
+        embed.addFields({ name: '🔴 YouTube', value: 'Error en la búsqueda.' });
       }
-    } catch (err) {
-      embed.addFields({ name: '🔴 YouTube', value: 'Error en la búsqueda.' });
     }
 
-    // TikTok
-    try {
-      const searchFn = tiktokSearch.search || tiktokSearch;
-      const ttResults = await searchFn(query, { limit: 2 });
-      if (ttResults && ttResults.length > 0) {
-        let ttText = '';
-        ttResults.forEach(item => {
-          const videoLink = item.play || item.webVideoUrl || `https://www.tiktok.com`;
-          const title = item.title || 'Vídeo de TikTok';
-          ttText += `• [${title.slice(0, 40)}...](${videoLink})\n`;
-        });
-        embed.addFields({ name: '🎵 TikTok', value: ttText });
-      } else {
-        embed.addFields({ name: '🎵 TikTok', value: 'Sin resultados.' });
+    // 2. TikTok
+    if (plataforma === 'todas' || plataforma === 'tiktok') {
+      try {
+        const searchFn = tiktokSearch.search || tiktokSearch;
+        const ttResults = await searchFn(query, { limit: 3 });
+
+        if (ttResults && ttResults.length > 0) {
+          let ttText = '';
+          ttResults.forEach(item => {
+            const videoLink = item.play || item.webVideoUrl || `https://www.tiktok.com`;
+            const title = item.title || 'Vídeo de TikTok';
+            ttText += `• [${title.slice(0, 45)}...](${videoLink})\n`;
+          });
+          embed.addFields({ name: '🎵 TikTok', value: ttText });
+        } else {
+          embed.addFields({ name: '🎵 TikTok', value: 'Sin resultados.' });
+        }
+      } catch (err) {
+        console.error('Error TikTok:', err);
+        embed.addFields({ name: '🎵 TikTok', value: 'No disponible en este momento.' });
       }
-    } catch (err) {
-      embed.addFields({ name: '🎵 TikTok', value: 'No disponible en este momento.' });
     }
 
     await interaction.editReply({ embeds: [embed] });
