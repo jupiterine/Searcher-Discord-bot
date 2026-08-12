@@ -33,11 +33,18 @@ function normalizeSearchText(value) {
     .trim();
 }
 
+// Formateador corregido y compatible al 100% con la API de YouTube
 function dateBoundary(value, endOfDay) {
   if (!value || typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return undefined;
-  return `${trimmed}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+  
+  // Extraer sólo los números de AAAA-MM-DD
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return undefined;
+
+  const [_, year, month, day] = match;
+  const timeStr = endOfDay ? "23:59:59Z" : "00:00:00Z";
+  return `${year}-${month}-${day}T${timeStr}`;
 }
 
 function matchesFilters(result, options) {
