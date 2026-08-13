@@ -10,8 +10,6 @@ app.listen(port, '0.0.0.0', () => console.log(`Servidor escuchando en puerto ${p
 // Cliente Discord
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// --- FUNCIONES AUXILIARES ---
-
 function normalizeSearchText(value) {
   if (!value) return '';
   return value
@@ -34,7 +32,7 @@ function formatDateForApi(value, endOfDay) {
 
 async function searchYouTube(options) {
   const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return { results: [], error: "No se ha configurado YOUTUBE_API_KEY en las variables de entorno." };
+  if (!apiKey) return { results: [], error: "No se ha encontrado la variable YOUTUBE_API_KEY." };
 
   try {
     const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
@@ -44,7 +42,7 @@ async function searchYouTube(options) {
     searchUrl.searchParams.set("q", options.name);
     searchUrl.searchParams.set("key", apiKey);
 
-    // Fechas
+    // Fechas AAAA-MM-DD
     const afterBoundary = formatDateForApi(options.after, false);
     const beforeBoundary = formatDateForApi(options.before, true);
     if (afterBoundary) searchUrl.searchParams.set("publishedAfter", afterBoundary);
@@ -54,30 +52,25 @@ async function searchYouTube(options) {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Error API YouTube:", data);
-      return { results: [], error: `Error de Google (${response.status}): ${data.error?.message || 'Consulta rechazada'}` };
+      return { results: [], error: `Google API (${response.status}): ${data.error?.message || 'Error desconocido'}` };
     }
 
-    let items = data.items || [];
+    const items = data.items || [];
 
-    // Filtrar localmente por Creador y Palabras Excluidas
     const filteredResults = items.map(item => {
       if (!item.id?.videoId || !item.snippet?.title) return null;
       return {
         title: item.snippet.title,
         creator: item.snippet.channelTitle || 'Canal desconocido',
-        publishedAt: item.snippet.publishedAt,
         url: `https://www.youtube.com/watch?v=${item.id.videoId}`
       };
     }).filter(item => {
       if (!item) return false;
 
-      // Filtro de creador
       if (options.creator) {
         if (!item.creator.toLowerCase().includes(options.creator.toLowerCase())) return false;
       }
 
-      // Filtro de palabras excluidas
       if (options.excludedTerms && options.excludedTerms.length > 0) {
         const fullText = normalizeSearchText(`${item.title} ${item.creator}`);
         for (const term of options.excludedTerms) {
@@ -92,8 +85,7 @@ async function searchYouTube(options) {
     return { results: filteredResults };
 
   } catch (err) {
-    console.error("Error inesperado en YouTube:", err);
-    return { results: [], error: `Error de conexión: ${err.message}` };
+    return { results: [], error: `Excepción: ${err.message}` };
   }
 }
 
@@ -145,62 +137,57 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'video-search') {
+    // Avisamos a Discord INMEDIATAMENTE de que vamos a tardar en responder
     await interaction.deferReply();
 
-    try {
-      const name = interaction.options.getString('name');
-      const platform = interaction.options.getString('platform') || 'both';
-      const exclude = interaction.options.getString('exclude');
-      const after = interaction.options.getString('after');
-      const before = interaction.options.getString('before');
-      const creator = interaction.options.getString('creator');
+    const name = interaction.options.getString('name');
+    const platform = interaction.options.getString('platform') || 'both';
+    const exclude = interaction.options.getString('exclude');
+    const after = interaction.options.getString('after');
+    const before = interaction.options.getString('before');
+    const creator = interaction.options.getString('creator');
 
-      const excludedTerms = exclude ? exclude.split(/[\s,]+/).filter(Boolean) : [];
+    const excludedTerms = exclude ? exclude.split(/[\s,]+/).filter(Boolean) : [];
 
-      const options = {
-        name,
-        creator: creator?.trim() || undefined,
-        after: after?.trim() || undefined,
-        before: before?.trim() || undefined,
-        excludedTerms
-      };
+    const options = {
+      name,
+      creator: creator?.trim() || undefined,
+      after: after?.trim() || undefined,
+      before: before?.trim() || undefined,
+      excludedTerms
+    };
 
-      const embed = new EmbedBuilder()
-        .setTitle(`Búsqueda: "${name}"`)
-        .setColor('#0099FF');
+    const embed = new EmbedBuilder()
+      .setTitle(`Búsqueda: "${name}"`)
+      .setColor('#0099FF');
 
-      // YouTube
-      if (platform === 'both' || platform === 'youtube') {
-        const ytData = await searchYouTube(options);
+    // YouTube
+    if (platform === 'both' || platform === 'youtube') {
+      const ytData = await searchYouTube(options);
 
-        if (ytData.error) {
-          embed.addFields({ name: '🔴 YouTube', value: `⚠️ ${ytData.error}` });
-        } else if (ytData.results && ytData.results.length > 0) {
-          let ytText = '';
-          ytData.results.forEach(item => {
-            ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
-          });
-          embed.addFields({ name: '🔴 YouTube', value: ytText });
-        } else {
-          embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con los filtros aplicados.' });
-        }
-      }
-
-      // TikTok
-      if (platform === 'both' || platform === 'tiktok') {
-        const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
-        embed.addFields({ 
-          name: '🎵 TikTok', 
-          value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Lista completa al abrir el enlace)*` 
+      if (ytData.error) {
+        embed.addFields({ name: '🔴 YouTube', value: `⚠️ ${ytData.error}` });
+      } else if (ytData.results && ytData.results.length > 0) {
+        let ytText = '';
+        ytData.results.forEach(item => {
+          ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
         });
+        embed.addFields({ name: '🔴 YouTube', value: ytText });
+      } else {
+        embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con los filtros aplicados.' });
       }
-
-      await interaction.editReply({ embeds: [embed] });
-
-    } catch (err) {
-      console.error('Error procesando interacción:', err);
-      await interaction.editReply(`Se produjo un error interno: ${err.message}`);
     }
+
+    // TikTok
+    if (platform === 'both' || platform === 'tiktok') {
+      const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
+      embed.addFields({ 
+        name: '🎵 TikTok', 
+        value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Lista completa al abrir el enlace)*` 
+      });
+    }
+
+    await interaction.editReply({ embeds: [embed] });
   }
 });
 
