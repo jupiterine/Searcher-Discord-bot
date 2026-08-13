@@ -10,7 +10,15 @@ app.listen(port, '0.0.0.0', () => console.log(`Servidor escuchando en puerto ${p
 // Cliente Discord
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// --- FUNCIONES AUXILIARES DE FILTRADO ---
+function normalizeSearchText(value) {
+  if (!value) return '';
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
 
 function parseIsoDuration(value) {
   if (!value) return undefined;
@@ -23,74 +31,55 @@ function parseIsoDuration(value) {
   );
 }
 
-function normalizeSearchText(value) {
-  if (!value) return '';
-  return value
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-}
-
-function formatDateForApi(value, endOfDay) {
-  if (!value || typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return undefined;
-  
-  const [_, year, month, day] = match;
-  return `${year}-${month}-${day}T${endOfDay ? '23:59:59Z' : '00:00:00Z'}`;
-}
-
 async function searchYouTube(options) {
   const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return { results: [], error: "No se ha configurado YOUTUBE_API_KEY en Render." };
+  if (!apiKey) return { results: [], error: "Falta la clave YOUTUBE_API_KEY en Render." };
 
   try {
     const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
     searchUrl.searchParams.set("part", "snippet");
     searchUrl.searchParams.set("type", "video");
-    searchUrl.searchParams.set("maxResults", "50");
+    searchUrl.searchParams.set("maxResults", "25");
     searchUrl.searchParams.set("q", options.name);
     searchUrl.searchParams.set("key", apiKey);
-
-    const afterBoundary = formatDateForApi(options.after, false);
-    const beforeBoundary = formatDateForApi(options.before, true);
-    if (afterBoundary) searchUrl.searchParams.set("publishedAfter", afterBoundary);
-    if (beforeBoundary) searchUrl.searchParams.set("publishedBefore", beforeBoundary);
 
     const response = await fetch(searchUrl.toString());
     const data = await response.json();
 
     if (!response.ok) {
-      return { results: [], error: `Google API (${response.status}): ${data.error?.message || 'Error en búsqueda'}` };
+      return { results: [], error: `Google API (${response.status}): ${data.error?.message || 'Error'}` };
     }
 
     const ids = (data.items ?? []).map((item) => item.id?.videoId).filter(Boolean);
     if (ids.length === 0) return { results: [] };
 
-    // Pedir detalles de duración a la API
-    const videosUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
-    videosUrl.searchParams.set("part", "snippet,contentDetails");
-    videosUrl.searchParams.set("id", ids.join(","));
-    videosUrl.searchParams.set("key", apiKey);
+    // Si ha pedido filtrar por duración, obtenemos los detalles del vídeo
+    let durationMap = {};
+    if (options.minSeconds !== undefined || options.maxSeconds !== undefined) {
+      const videosUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
+      videosUrl.searchParams.set("part", "contentDetails");
+      videosUrl.searchParams.set("id", ids.join(","));
+      videosUrl.searchParams.set("key", apiKey);
 
-    const videoResponse = await fetch(videosUrl.toString());
-    const videoData = await videoResponse.json();
+      const videoResponse = await fetch(videosUrl.toString());
+      const videoData = await videoResponse.json();
 
-    if (!videoResponse.ok) {
-      return { results: [], error: `Google API Details (${videoResponse.status}): ${videoData.error?.message || 'Error en detalles'}` };
+      if (videoResponse.ok && videoData.items) {
+        videoData.items.forEach(v => {
+          durationMap[v.id] = parseIsoDuration(v.contentDetails?.duration);
+        });
+      }
     }
 
-    // Filtrado exhaustivo exacto al de Replit
-    const filteredResults = (videoData.items ?? []).map((item) => {
-      if (!item.id || !item.snippet?.title) return null;
+    // Filtrar por exclusión, creador y duración
+    const filteredResults = (data.items ?? []).map((item) => {
+      const vId = item.id?.videoId;
+      if (!vId || !item.snippet?.title) return null;
       return {
         title: item.snippet.title,
         creator: item.snippet.channelTitle || 'Canal desconocido',
-        durationSeconds: parseIsoDuration(item.contentDetails?.duration),
-        url: `https://www.youtube.com/watch?v=${item.id}`
+        durationSeconds: durationMap[vId],
+        url: `https://www.youtube.com/watch?v=${vId}`
       };
     }).filter((item) => {
       if (!item) return false;
@@ -100,7 +89,7 @@ async function searchYouTube(options) {
         if (!item.creator.toLowerCase().includes(options.creator.toLowerCase())) return false;
       }
 
-      // Palabras excluidas
+      // Palabras a excluir
       if (options.excludedTerms && options.excludedTerms.length > 0) {
         const fullText = normalizeSearchText(`${item.title} ${item.creator}`);
         for (const term of options.excludedTerms) {
@@ -123,15 +112,15 @@ async function searchYouTube(options) {
     return { results: filteredResults };
 
   } catch (err) {
-    return { results: [], error: `Error de conexión: ${err.message}` };
+    return { results: [], error: `Error: ${err.message}` };
   }
 }
 
-// --- REGISTRO DEL COMANDO COMPLETO ---
+// --- REGISTRO DEL COMANDO ---
 
 const command = new SlashCommandBuilder()
   .setName('video-search')
-  .setDescription('Busca vídeos en YouTube y TikTok con filtros avanzados')
+  .setDescription('Busca vídeos en YouTube y TikTok')
   .addStringOption(option => 
     option.setName('name')
       .setDescription('Nombre o término a buscar')
@@ -154,12 +143,6 @@ const command = new SlashCommandBuilder()
     option.setName('exclude')
       .setDescription('Palabras a excluir (separadas por espacio)'))
   .addStringOption(option =>
-    option.setName('after')
-      .setDescription('Publicado después de esta fecha (AAAA-MM-DD)'))
-  .addStringOption(option =>
-    option.setName('before')
-      .setDescription('Publicado antes de esta fecha (AAAA-MM-DD)'))
-  .addStringOption(option =>
     option.setName('creator')
       .setDescription('Nombre del canal/creador'));
 
@@ -171,9 +154,9 @@ client.once('ready', async () => {
       Routes.applicationCommands(client.user.id),
       { body: [command.toJSON()] }
     );
-    console.log('¡Comando /video-search registrado por completo!');
+    console.log('¡Comando registrado con éxito!');
   } catch (error) {
-    console.error('Error al registrar comandos:', error);
+    console.error('Error al registrar comando:', error);
   }
 });
 
@@ -181,17 +164,15 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'video-search') {
-    try {
-      // 1. Responder inmediatamente a Discord
-      await interaction.deferReply();
+    // 1. Responder de inmediato a Discord para evitar que salte el error de tiempo
+    await interaction.deferReply();
 
+    try {
       const name = interaction.options.getString('name');
       const platform = interaction.options.getString('platform') || 'both';
       const minLength = interaction.options.getInteger('min_length');
       const maxLength = interaction.options.getInteger('max_length');
       const exclude = interaction.options.getString('exclude');
-      const after = interaction.options.getString('after');
-      const before = interaction.options.getString('before');
       const creator = interaction.options.getString('creator');
 
       const minSeconds = (minLength !== null && minLength !== undefined) ? minLength * 60 : undefined;
@@ -203,8 +184,6 @@ client.on('interactionCreate', async interaction => {
         creator: creator?.trim() || undefined,
         minSeconds,
         maxSeconds,
-        after: after?.trim() || undefined,
-        before: before?.trim() || undefined,
         excludedTerms
       };
 
@@ -212,7 +191,7 @@ client.on('interactionCreate', async interaction => {
         .setTitle(`Búsqueda: "${name}"`)
         .setColor('#0099FF');
 
-      // 2. Ejecutar YouTube
+      // YouTube
       if (platform === 'both' || platform === 'youtube') {
         const ytData = await searchYouTube(options);
 
@@ -225,26 +204,24 @@ client.on('interactionCreate', async interaction => {
           });
           embed.addFields({ name: '🔴 YouTube', value: ytText });
         } else {
-          embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con los filtros aplicados.' });
+          embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con esos criterios.' });
         }
       }
 
-      // 3. Ejecutar TikTok
+      // TikTok
       if (platform === 'both' || platform === 'tiktok') {
         const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
         embed.addFields({ 
           name: '🎵 TikTok', 
-          value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Lista completa al abrir el enlace)*` 
+          value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Verás la lista completa al hacer clic)*` 
         });
       }
 
       await interaction.editReply({ embeds: [embed] });
 
     } catch (err) {
-      console.error('Error en la interacción:', err);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(`Se ha producido un error al procesar la orden: ${err.message}`);
-      }
+      console.error('Error procesando interacción:', err);
+      await interaction.editReply('Se produjo un error al realizar la búsqueda.');
     }
   }
 });
