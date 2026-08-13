@@ -4,8 +4,12 @@ import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuil
 // Servidor de apoyo para Render
 const app = express();
 const port = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Bot activo'));
-app.listen(port, '0.0.0.0', () => console.log(`Servidor en puerto ${port}`));
+
+app.get('/', (req, res) => {
+  res.status(200).send('Bot activo 24/7');
+});
+
+app.listen(port, '0.0.0.0', () => console.log(`Servidor escuchando en puerto ${port}`));
 
 // Protecciones globales anti-caídas
 process.on('unhandledRejection', (err) => console.error('Error capturado:', err));
