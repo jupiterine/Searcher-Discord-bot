@@ -1,12 +1,28 @@
 import express from 'express';
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 
+// Servidor de apoyo para Render
 const app = express();
 const port = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Bot activo'));
 app.listen(port, '0.0.0.0', () => console.log(`Servidor escuchando en puerto ${port}`));
 
+// --- BLINDAJE ABSOLUTO CONTRA CAÍDAS (PREVIENE 'UNHANDLED ERROR') ---
+process.on('unhandledRejection', (reason, promise) => {
+  console.error(' [BLINDAJE] Error no capturado interceptado:', reason);
+});
+
+process.on('uncaughtException', (err, origin) => {
+  console.error(' [BLINDAJE] Excepción interceptada:', err);
+});
+// -------------------------------------------------------------------
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// Capturar errores internos de reconexión del propio cliente de Discord
+client.on('error', (error) => {
+  console.error(' [DISCORD CLIENT ERROR]:', error);
+});
 
 function normalizeSearchText(value) {
   if (!value) return '';
@@ -34,7 +50,7 @@ async function searchYouTube(options) {
     const data = await response.json();
 
     if (!response.ok) {
-      return { results: [], error: `Google API (${response.status}): ${data.error?.message || 'Error de consulta'}` };
+      return { results: [], error: `Google API (${response.status}): ${data.error?.message || 'Error'}` };
     }
 
     const items = data.items || [];
@@ -49,11 +65,9 @@ async function searchYouTube(options) {
       })
       .filter(Boolean)
       .filter(item => {
-        // Filtro Creador
         if (options.creator && !item.creator.toLowerCase().includes(options.creator.toLowerCase())) {
           return false;
         }
-        // Filtro Palabras Excluidas
         if (options.excludedTerms && options.excludedTerms.length > 0) {
           const fullText = normalizeSearchText(`${item.title} ${item.creator}`);
           for (const term of options.excludedTerms) {
@@ -67,11 +81,11 @@ async function searchYouTube(options) {
 
     return { results };
   } catch (err) {
-    return { results: [], error: `Error de red: ${err.message}` };
+    return { results: [], error: `Fallo de red: ${err.message}` };
   }
 }
 
-// --- CONFIGURACIÓN DEL COMANDO DISCORD ---
+// --- COMANDO DISCORD ---
 
 const command = new SlashCommandBuilder()
   .setName('video-search')
@@ -103,7 +117,7 @@ client.once('ready', async () => {
       Routes.applicationCommands(client.user.id),
       { body: [command.toJSON()] }
     );
-    console.log('¡Comando registrado con éxito!');
+    console.log('¡Comando registrado correctamente!');
   } catch (error) {
     console.error('Error al registrar comando:', error);
   }
@@ -113,51 +127,55 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'video-search') {
-    const name = interaction.options.getString('name');
-    const platform = interaction.options.getString('platform') || 'both';
-    const exclude = interaction.options.getString('exclude');
-    const creator = interaction.options.getString('creator');
+    try {
+      const name = interaction.options.getString('name');
+      const platform = interaction.options.getString('platform') || 'both';
+      const exclude = interaction.options.getString('exclude');
+      const creator = interaction.options.getString('creator');
 
-    const excludedTerms = exclude ? exclude.split(/[\s,]+/).filter(Boolean) : [];
+      const excludedTerms = exclude ? exclude.split(/[\s,]+/).filter(Boolean) : [];
 
-    const options = {
-      name,
-      creator: creator?.trim() || undefined,
-      excludedTerms
-    };
+      const options = {
+        name,
+        creator: creator?.trim() || undefined,
+        excludedTerms
+      };
 
-    const embed = new EmbedBuilder()
-      .setTitle(`Búsqueda: "${name}"`)
-      .setColor('#0099FF');
+      const embed = new EmbedBuilder()
+        .setTitle(`Búsqueda: "${name}"`)
+        .setColor('#0099FF');
 
-    // 1. YouTube
-    if (platform === 'both' || platform === 'youtube') {
-      const ytData = await searchYouTube(options);
+      // YouTube
+      if (platform === 'both' || platform === 'youtube') {
+        const ytData = await searchYouTube(options);
 
-      if (ytData.error) {
-        embed.addFields({ name: '🔴 YouTube', value: `⚠️ ${ytData.error}` });
-      } else if (ytData.results && ytData.results.length > 0) {
-        let ytText = '';
-        ytData.results.forEach(item => {
-          ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
-        });
-        embed.addFields({ name: '🔴 YouTube', value: ytText });
-      } else {
-        embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con esos criterios.' });
+        if (ytData.error) {
+          embed.addFields({ name: '🔴 YouTube', value: `⚠️ ${ytData.error}` });
+        } else if (ytData.results && ytData.results.length > 0) {
+          let ytText = '';
+          ytData.results.forEach(item => {
+            ytText += `• [${item.title}](${item.url}) — *${item.creator}*\n`;
+          });
+          embed.addFields({ name: '🔴 YouTube', value: ytText });
+        } else {
+          embed.addFields({ name: '🔴 YouTube', value: 'No se encontraron resultados con esos criterios.' });
+        }
       }
-    }
 
-    // 2. TikTok
-    if (platform === 'both' || platform === 'tiktok') {
-      const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
-      embed.addFields({ 
-        name: '🎵 TikTok', 
-        value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Verás la lista completa al hacer clic)*` 
-      });
-    }
+      // TikTok
+      if (platform === 'both' || platform === 'tiktok') {
+        const tiktokSearchUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(name)}`;
+        embed.addFields({ 
+          name: '🎵 TikTok', 
+          value: `• [Buscar "${name}" en TikTok](${tiktokSearchUrl})\n*(Verás la lista completa al hacer clic)*` 
+        });
+      }
 
-    // Responder directamente a Discord sin esperas intermedias
-    await interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
+
+    } catch (err) {
+      console.error('Error en interacción:', err);
+    }
   }
 });
 
